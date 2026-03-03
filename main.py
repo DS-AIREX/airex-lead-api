@@ -37,6 +37,14 @@ try:
     models = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/object")
     print(f"✅ Connected to Odoo successfully! User ID: {uid}")
     
+    # Check available fields in crm.lead
+    fields = models.execute_kw(
+        ODOO_DB, uid, ODOO_PASSWORD,
+        'crm.lead', 'fields_get',
+        [], {'attributes': ['string', 'type', 'required']}
+    )
+    print("✅ Available fields in crm.lead:", list(fields.keys()))
+    
 except Exception as e:
     print(f"❌ Failed to connect to Odoo: {e}")
     uid = None
@@ -65,31 +73,91 @@ def sync_lead(lead: Lead):
         print(f"\n{'='*50}")
         print(f"🔄 Processing lead: {lead.name}")
         print(f"📱 Phone: {lead.phone}")
+        print(f"📱 Mobile: {lead.mobile}")
         print(f"📧 Email: {lead.email}")
         print(f"👤 Contact Person: {lead.contact_person}")
         print(f"🎪 Exhibition: {lead.exhibition}")
         print(f"🆔 Unique ID: {lead.unique_id}")
 
         # =============================
+        # FIND OR CREATE SALES PERSON
+        # =============================
+        user_id = uid  # Default to API user
+        if lead.sales_person:
+            user_ids = models.execute_kw(
+                ODOO_DB, uid, ODOO_PASSWORD,
+                'res.users', 'search',
+                [[['name', 'ilike', lead.sales_person]]]
+            )
+            if user_ids:
+                user_id = user_ids[0]
+                print(f"✅ Found sales person: {lead.sales_person} (ID: {user_id})")
+
+        # =============================
+        # FIND OR CREATE SOURCE/CAMPAIGN
+        # =============================
+        campaign_id = False
+        try:
+            # Check if campaign exists
+            campaign_ids = models.execute_kw(
+                ODOO_DB, uid, ODOO_PASSWORD,
+                'utm.campaign', 'search',
+                [[['name', '=', lead.exhibition]]]
+            )
+            
+            if campaign_ids:
+                campaign_id = campaign_ids[0]
+                print(f"✅ Found existing campaign: {lead.exhibition} (ID: {campaign_id})")
+            else:
+                # Create new campaign
+                campaign_id = models.execute_kw(
+                    ODOO_DB, uid, ODOO_PASSWORD,
+                    'utm.campaign', 'create',
+                    [{'name': lead.exhibition}]
+                )
+                print(f"✅ Created new campaign: {lead.exhibition} (ID: {campaign_id})")
+        except Exception as e:
+            print(f"⚠️ Could not create campaign: {e}")
+
+        # =============================
         # CREATE CUSTOMER (res.partner)
         # =============================
         partner_id = None
 
-        if lead.contact_person:
+        if lead.contact_person or lead.name:
+            partner_name = lead.contact_person or lead.name
+            
             # Search for existing partner
             partner_ids = models.execute_kw(
                 ODOO_DB, uid, ODOO_PASSWORD,
                 'res.partner', 'search',
-                [[['name', '=', lead.contact_person]]]
+                [[['name', '=', partner_name]]]
             )
 
             if partner_ids:
                 partner_id = partner_ids[0]
-                print(f"✅ Found existing partner: {lead.contact_person} (ID: {partner_id})")
+                print(f"✅ Found existing partner: {partner_name} (ID: {partner_id})")
+                
+                # Update partner with phone/mobile if not set
+                update_data = {}
+                if lead.phone:
+                    update_data['phone'] = lead.phone
+                if lead.mobile:
+                    update_data['mobile'] = lead.mobile
+                if lead.email:
+                    update_data['email'] = lead.email
+                    
+                if update_data:
+                    models.execute_kw(
+                        ODOO_DB, uid, ODOO_PASSWORD,
+                        'res.partner', 'write',
+                        [[partner_id], update_data]
+                    )
+                    print(f"✅ Updated partner with contact details")
             else:
                 # Create new partner
                 partner_data = {
-                    'name': lead.contact_person,
+                    'name': partner_name,
                 }
                 
                 if lead.phone:
@@ -104,7 +172,7 @@ def sync_lead(lead: Lead):
                     'res.partner', 'create',
                     [partner_data]
                 )
-                print(f"✅ Created new partner: {lead.contact_person} (ID: {partner_id})")
+                print(f"✅ Created new partner: {partner_name} (ID: {partner_id})")
 
         # =============================
         # CREATE OPPORTUNITY
@@ -114,20 +182,32 @@ def sync_lead(lead: Lead):
         opportunity_data = {
             'name': lead.name,
             'type': 'opportunity',
-            'description': f"Source: {lead.exhibition}\nUnique ID: {lead.unique_id}\n\n{lead.notes or ''}",
+            'user_id': user_id,
         }
+
+        # Add campaign/source
+        if campaign_id:
+            opportunity_data['campaign_id'] = campaign_id
 
         # Add partner if exists
         if partner_id:
             opportunity_data['partner_id'] = partner_id
 
-        # Add contact fields
+        # Add contact fields - PHONE goes to phone field
         if lead.phone:
             opportunity_data['phone'] = lead.phone
+        
+        # MOBILE goes to mobile field (if exists in your Odoo)
         if lead.mobile:
             opportunity_data['mobile'] = lead.mobile
+            
+        # EMAIL goes to email_from field
         if lead.email:
             opportunity_data['email_from'] = lead.email
+
+        # Add notes (without source and unique_id to avoid duplication)
+        if lead.notes:
+            opportunity_data['description'] = lead.notes
 
         print(f"📤 Opportunity data: {opportunity_data}")
 
@@ -138,6 +218,27 @@ def sync_lead(lead: Lead):
         )
         
         print(f"✅ Opportunity created with ID: {opportunity_id}")
+
+        # =============================
+        # ADD A NOTE/MESSAGE WITH SOURCE AND UNIQUE ID
+        # =============================
+        message_body = f"""
+        <b>Lead Source:</b> {lead.exhibition}<br/>
+        <b>Unique ID:</b> {lead.unique_id}<br/>
+        <b>Contact Person:</b> {lead.contact_person or 'Not provided'}<br/>
+        """
+        
+        models.execute_kw(
+            ODOO_DB, uid, ODOO_PASSWORD,
+            'crm.lead', 'message_post',
+            [opportunity_id],
+            {
+                'body': message_body,
+                'message_type': 'comment',
+                'subtype_xmlid': 'mail.mt_note'
+            }
+        )
+        print(f"✅ Added note with source and unique ID")
 
         # =============================
         # ATTACH IMAGE
@@ -197,12 +298,24 @@ def test_connection():
             }
         }
     
+    # Get available fields for debugging
+    fields = []
+    try:
+        fields = models.execute_kw(
+            ODOO_DB, uid, ODOO_PASSWORD,
+            'crm.lead', 'fields_get',
+            [], {'attributes': ['string', 'type']}
+        )
+    except:
+        pass
+    
     return {
         "status": "connected",
         "uid": uid,
         "url": ODOO_URL,
         "db": ODOO_DB,
-        "user": ODOO_USERNAME
+        "user": ODOO_USERNAME,
+        "available_fields": list(fields.keys()) if fields else []
     }
 
 
@@ -212,6 +325,6 @@ def root():
         "message": "Lead Sync API is running",
         "endpoints": {
             "POST /sync-lead": "Sync a lead with image",
-            "GET /test": "Test Odoo connection"
+            "GET /test": "Test Odoo connection and see available fields"
         }
     }
