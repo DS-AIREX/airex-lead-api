@@ -138,7 +138,7 @@ def sync_lead(lead: Lead):
             opportunity_data['email_from'] = lead.email
 
         if lead.company:
-            opportunity_data['partner_name'] = lead.company  # Correct field
+            opportunity_data['contact_name'] = lead.company
 
         if lead.notes:
             opportunity_data['description'] = lead.notes
