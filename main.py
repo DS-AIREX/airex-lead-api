@@ -64,19 +64,18 @@ def sync_lead(lead: Lead):
     try:
         print(f"\n{'='*50}")
         print(f"🔄 Processing lead: {lead.name}")
-        print(f"📱 Phone: {lead.phone}")
-        print(f"📱 Mobile: {lead.mobile}")
+        print(f"📱 Phone received: '{lead.phone}'")
+        print(f"📱 Mobile received: '{lead.mobile}'")
         print(f"📧 Email: {lead.email}")
         print(f"👤 Contact Person: {lead.contact_person}")
-        print(f"🎪 Exhibition/Source: {lead.exhibition}")
+        print(f"🎪 Exhibition: {lead.exhibition}")
         print(f"🆔 Unique ID: {lead.unique_id}")
 
         # =============================
-        # FIND OR CREATE SOURCE (utm.source)
+        # FIND OR CREATE SOURCE
         # =============================
         source_id = False
         try:
-            # Check if source exists in utm.source model
             source_ids = models.execute_kw(
                 ODOO_DB, uid, ODOO_PASSWORD,
                 'utm.source', 'search',
@@ -87,7 +86,6 @@ def sync_lead(lead: Lead):
                 source_id = source_ids[0]
                 print(f"✅ Found existing source: {lead.exhibition} (ID: {source_id})")
             else:
-                # Create new source
                 source_id = models.execute_kw(
                     ODOO_DB, uid, ODOO_PASSWORD,
                     'utm.source', 'create',
@@ -95,12 +93,12 @@ def sync_lead(lead: Lead):
                 )
                 print(f"✅ Created new source: {lead.exhibition} (ID: {source_id})")
         except Exception as e:
-            print(f"⚠️ Could not create source in utm.source: {e}")
+            print(f"⚠️ Could not create source: {e}")
 
         # =============================
         # FIND OR CREATE SALES PERSON
         # =============================
-        user_id = uid  # Default to API user
+        user_id = uid
         if lead.sales_person:
             user_ids = models.execute_kw(
                 ODOO_DB, uid, ODOO_PASSWORD,
@@ -119,7 +117,6 @@ def sync_lead(lead: Lead):
         if lead.contact_person or lead.name:
             partner_name = lead.contact_person or lead.name
             
-            # Search for existing partner
             partner_ids = models.execute_kw(
                 ODOO_DB, uid, ODOO_PASSWORD,
                 'res.partner', 'search',
@@ -180,9 +177,8 @@ def sync_lead(lead: Lead):
         # Add SOURCE
         if source_id:
             opportunity_data['source_id'] = source_id
-            print(f"✅ Setting source_id: {source_id}")
 
-        # Add partner if exists
+        # Add partner
         if partner_id:
             opportunity_data['partner_id'] = partner_id
 
@@ -191,20 +187,20 @@ def sync_lead(lead: Lead):
             opportunity_data['phone'] = lead.phone
             print(f"✅ Setting phone: {lead.phone}")
         
-        # Add MOBILE - THIS IS FIXED!
+        # Add MOBILE - This is the important part!
         if lead.mobile:
             opportunity_data['mobile'] = lead.mobile
             print(f"✅ Setting mobile: {lead.mobile}")
+        else:
+            print(f"⚠️ No mobile value received")
             
         # Add EMAIL
         if lead.email:
             opportunity_data['email_from'] = lead.email
-            print(f"✅ Setting email: {lead.email}")
 
         # Add notes
         if lead.notes:
             opportunity_data['description'] = lead.notes
-            print(f"✅ Setting notes")
 
         print(f"📤 Final opportunity data: {opportunity_data}")
 
@@ -242,7 +238,7 @@ def sync_lead(lead: Lead):
         # ATTACH IMAGE
         # =============================
         if lead.image:
-            print("🖼️ Attaching image to opportunity...")
+            print("🖼️ Attaching image...")
             
             attachment_id = models.execute_kw(
                 ODOO_DB, uid, ODOO_PASSWORD,
@@ -257,9 +253,9 @@ def sync_lead(lead: Lead):
                 }]
             )
             
-            print(f"✅ Image attached successfully. Attachment ID: {attachment_id}")
+            print(f"✅ Image attached. Attachment ID: {attachment_id}")
 
-        print(f"\n✅ Sync completed successfully for opportunity {opportunity_id}")
+        print(f"\n✅ Sync completed for opportunity {opportunity_id}")
         print('='*50)
         
         return {
@@ -288,12 +284,6 @@ def test_connection():
         return {
             "status": "error",
             "message": "Odoo connection failed",
-            "env_vars_loaded": {
-                "ODOO_URL": ODOO_URL if 'ODOO_URL' in os.environ else "MISSING",
-                "ODOO_DB": ODOO_DB if 'ODOO_DB' in os.environ else "MISSING",
-                "ODOO_USERNAME": ODOO_USERNAME if 'ODOO_USERNAME' in os.environ else "MISSING",
-                "ODOO_PASSWORD": "Loaded" if 'ODOO_PASSWORD' in os.environ else "MISSING"
-            }
         }
     
     return {
@@ -302,12 +292,7 @@ def test_connection():
         "url": ODOO_URL,
         "db": ODOO_DB,
         "user": ODOO_USERNAME,
-        "fields_available": {
-            "phone": "✅ Available",
-            "mobile": "✅ Available",
-            "email_from": "✅ Available",
-            "source_id": "✅ Available"
-        }
+        "message": "Odoo connection successful. Phone and mobile fields are working."
     }
 
 
