@@ -1,22 +1,26 @@
+import os
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import xmlrpc.client
 import base64
 import traceback
-import os
+
+# Load environment variables
+load_dotenv()
 
 app = FastAPI()
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, you can restrict this
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Get Odoo credentials from environment variables (exactly like your working code)
+# Get Odoo credentials from environment variables
 ODOO_URL = os.environ["ODOO_URL"]
 ODOO_DB = os.environ["ODOO_DB"]
 ODOO_USERNAME = os.environ["ODOO_USERNAME"]
@@ -75,7 +79,7 @@ def sync_lead(lead: Lead):
             [[['name', 'ilike', lead.sales_person]]]
         )
         
-        assigned_user_id = uid  # Default to API user
+        assigned_user_id = uid
         if user_ids:
             assigned_user_id = user_ids[0]
             print(f"✅ Found sales person: {lead.sales_person} (ID: {assigned_user_id})")
@@ -91,13 +95,11 @@ def sync_lead(lead: Lead):
             'user_id': assigned_user_id,
         }
         
-        # Add source/exhibition to description
         if lead.notes:
             opportunity_data['description'] = f"Source: {lead.exhibition}\n\n{lead.notes}"
         else:
             opportunity_data['description'] = f"Source: {lead.exhibition}"
         
-        # Add optional fields
         if lead.phone:
             opportunity_data['phone'] = lead.phone
         if lead.email:
