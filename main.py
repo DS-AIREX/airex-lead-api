@@ -7,8 +7,10 @@ from pydantic import BaseModel
 import xmlrpc.client
 import traceback
 
+# Load environment variables
 load_dotenv()
 
+# Odoo credentials
 ODOO_URL = os.environ["ODOO_URL"]
 ODOO_DB = os.environ["ODOO_DB"]
 ODOO_USERNAME = os.environ["ODOO_USERNAME"]
@@ -16,6 +18,7 @@ ODOO_PASSWORD = os.environ["ODOO_PASSWORD"]
 
 app = FastAPI()
 
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,10 +26,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-common = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/common")
-uid = common.authenticate(ODOO_DB, ODOO_USERNAME, ODOO_PASSWORD, {})
-models = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/object")
-
+# Connect to Odoo
+try:
+    common = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/common")
+    uid = common.authenticate(ODOO_DB, ODOO_USERNAME, ODOO_PASSWORD, {})
+    
+    if not uid:
+        raise Exception("Authentication failed")
+    
+    models = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/object")
+    print(f"✅ Connected to Odoo successfully! User ID: {uid}")
+    
+except Exception as e:
+    print(f"❌ Failed to connect to Odoo: {e}")
+    uid = None
+    models = None
 
 class Lead(BaseModel):
     unique_id: str
@@ -43,27 +57,26 @@ class Lead(BaseModel):
 
 @app.post("/sync-lead")
 def sync_lead(lead: Lead):
-
+    # Check Odoo connection
+    if uid is None or models is None:
+        raise HTTPException(status_code=500, detail="Odoo connection not available")
+    
     try:
+        print(f"\n{'='*50}")
+        print(f"🔄 Processing lead: {lead.name}")
+        print(f"📱 Phone: {lead.phone}")
+        print(f"📧 Email: {lead.email}")
+        print(f"👤 Contact Person: {lead.contact_person}")
+        print(f"🎪 Exhibition: {lead.exhibition}")
+        print(f"🆔 Unique ID: {lead.unique_id}")
 
         # =============================
-        # DUPLICATE CHECK
-        # =============================
-        existing = models.execute_kw(
-            ODOO_DB, uid, ODOO_PASSWORD,
-            'crm.lead', 'search',
-            [[['x_unique_id', '=', lead.unique_id]]]
-        )
-
-        if existing:
-            return {"status": "already_exists"}
-
-        # =============================
-        # CREATE CUSTOMER
+        # CREATE CUSTOMER (res.partner)
         # =============================
         partner_id = None
 
         if lead.contact_person:
+            # Search for existing partner
             partner_ids = models.execute_kw(
                 ODOO_DB, uid, ODOO_PASSWORD,
                 'res.partner', 'search',
@@ -72,57 +85,71 @@ def sync_lead(lead: Lead):
 
             if partner_ids:
                 partner_id = partner_ids[0]
+                print(f"✅ Found existing partner: {lead.contact_person} (ID: {partner_id})")
             else:
+                # Create new partner
+                partner_data = {
+                    'name': lead.contact_person,
+                }
+                
+                if lead.phone:
+                    partner_data['phone'] = lead.phone
+                if lead.mobile:
+                    partner_data['mobile'] = lead.mobile
+                if lead.email:
+                    partner_data['email'] = lead.email
+                
                 partner_id = models.execute_kw(
                     ODOO_DB, uid, ODOO_PASSWORD,
                     'res.partner', 'create',
-                    [{
-                        'name': lead.contact_person,
-                        'phone': lead.phone or '',
-                        'mobile': lead.mobile or '',
-                        'email': lead.email or ''
-                    }]
+                    [partner_data]
                 )
+                print(f"✅ Created new partner: {lead.contact_person} (ID: {partner_id})")
 
         # =============================
         # CREATE OPPORTUNITY
         # =============================
+        print("📝 Creating opportunity in Odoo...")
+        
         opportunity_data = {
             'name': lead.name,
             'type': 'opportunity',
-            'x_unique_id': lead.unique_id
+            'description': f"Source: {lead.exhibition}\nUnique ID: {lead.unique_id}\n\n{lead.notes or ''}",
         }
 
+        # Add partner if exists
         if partner_id:
             opportunity_data['partner_id'] = partner_id
 
+        # Add contact fields
         if lead.phone:
             opportunity_data['phone'] = lead.phone
-
         if lead.mobile:
             opportunity_data['mobile'] = lead.mobile
-
         if lead.email:
             opportunity_data['email_from'] = lead.email
 
-        if lead.notes:
-            opportunity_data['description'] = lead.notes
+        print(f"📤 Opportunity data: {opportunity_data}")
 
         opportunity_id = models.execute_kw(
             ODOO_DB, uid, ODOO_PASSWORD,
             'crm.lead', 'create',
             [opportunity_data]
         )
+        
+        print(f"✅ Opportunity created with ID: {opportunity_id}")
 
         # =============================
         # ATTACH IMAGE
         # =============================
         if lead.image:
-            models.execute_kw(
+            print("🖼️ Attaching image to opportunity...")
+            
+            attachment_id = models.execute_kw(
                 ODOO_DB, uid, ODOO_PASSWORD,
                 'ir.attachment', 'create',
                 [{
-                    'name': f"{lead.name}.jpg",
+                    'name': f"{lead.name}_{opportunity_id}.jpg",
                     'type': 'binary',
                     'datas': lead.image,
                     'res_model': 'crm.lead',
@@ -130,9 +157,61 @@ def sync_lead(lead: Lead):
                     'mimetype': 'image/jpeg'
                 }]
             )
+            
+            print(f"✅ Image attached successfully. Attachment ID: {attachment_id}")
 
-        return {"status": "success"}
+        print(f"\n✅ Sync completed successfully for opportunity {opportunity_id}")
+        print('='*50)
+        
+        return {
+            "status": "success", 
+            "id": opportunity_id,
+            "message": "Lead created successfully"
+        }
 
+    except xmlrpc.client.Fault as fault:
+        print(f"\n❌ Odoo XML-RPC Fault:")
+        print(f"Fault code: {fault.faultCode}")
+        print(f"Fault string: {fault.faultString}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Odoo Error: {fault.faultString}")
+    
     except Exception as e:
+        print(f"\n❌ Unexpected error:")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/test")
+def test_connection():
+    """Test endpoint to verify Odoo connection"""
+    if uid is None:
+        return {
+            "status": "error",
+            "message": "Odoo connection failed",
+            "env_vars_loaded": {
+                "ODOO_URL": ODOO_URL if 'ODOO_URL' in os.environ else "MISSING",
+                "ODOO_DB": ODOO_DB if 'ODOO_DB' in os.environ else "MISSING",
+                "ODOO_USERNAME": ODOO_USERNAME if 'ODOO_USERNAME' in os.environ else "MISSING",
+                "ODOO_PASSWORD": "Loaded" if 'ODOO_PASSWORD' in os.environ else "MISSING"
+            }
+        }
+    
+    return {
+        "status": "connected",
+        "uid": uid,
+        "url": ODOO_URL,
+        "db": ODOO_DB,
+        "user": ODOO_USERNAME
+    }
+
+
+@app.get("/")
+def root():
+    return {
+        "message": "Lead Sync API is running",
+        "endpoints": {
+            "POST /sync-lead": "Sync a lead with image",
+            "GET /test": "Test Odoo connection"
+        }
+    }
