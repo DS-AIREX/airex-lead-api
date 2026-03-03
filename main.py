@@ -76,8 +76,42 @@ def sync_lead(lead: Lead):
         print(f"📱 Mobile: {lead.mobile}")
         print(f"📧 Email: {lead.email}")
         print(f"👤 Contact Person: {lead.contact_person}")
-        print(f"🎪 Exhibition: {lead.exhibition}")
+        print(f"🎪 Exhibition/Source: {lead.exhibition}")
         print(f"🆔 Unique ID: {lead.unique_id}")
+
+        # =============================
+        # FIND OR CREATE SOURCE (utm.source)
+        # =============================
+        source_id = False
+        try:
+            # Check if source exists in utm.source model
+            source_ids = models.execute_kw(
+                ODOO_DB, uid, ODOO_PASSWORD,
+                'utm.source', 'search',
+                [[['name', '=', lead.exhibition]]]
+            )
+            
+            if source_ids:
+                source_id = source_ids[0]
+                print(f"✅ Found existing source: {lead.exhibition} (ID: {source_id})")
+            else:
+                # Create new source
+                source_id = models.execute_kw(
+                    ODOO_DB, uid, ODOO_PASSWORD,
+                    'utm.source', 'create',
+                    [{'name': lead.exhibition}]
+                )
+                print(f"✅ Created new source: {lead.exhibition} (ID: {source_id})")
+        except Exception as e:
+            print(f"⚠️ Could not create source in utm.source: {e}")
+            
+            # Try alternative: maybe source_id field directly
+            try:
+                # Try to find if there's a source field that accepts string
+                print(f"⚠️ Trying to set source as text field")
+                source_text = lead.exhibition
+            except:
+                pass
 
         # =============================
         # FIND OR CREATE SALES PERSON
@@ -92,32 +126,8 @@ def sync_lead(lead: Lead):
             if user_ids:
                 user_id = user_ids[0]
                 print(f"✅ Found sales person: {lead.sales_person} (ID: {user_id})")
-
-        # =============================
-        # FIND OR CREATE SOURCE/CAMPAIGN
-        # =============================
-        campaign_id = False
-        try:
-            # Check if campaign exists
-            campaign_ids = models.execute_kw(
-                ODOO_DB, uid, ODOO_PASSWORD,
-                'utm.campaign', 'search',
-                [[['name', '=', lead.exhibition]]]
-            )
-            
-            if campaign_ids:
-                campaign_id = campaign_ids[0]
-                print(f"✅ Found existing campaign: {lead.exhibition} (ID: {campaign_id})")
             else:
-                # Create new campaign
-                campaign_id = models.execute_kw(
-                    ODOO_DB, uid, ODOO_PASSWORD,
-                    'utm.campaign', 'create',
-                    [{'name': lead.exhibition}]
-                )
-                print(f"✅ Created new campaign: {lead.exhibition} (ID: {campaign_id})")
-        except Exception as e:
-            print(f"⚠️ Could not create campaign: {e}")
+                print(f"⚠️ Sales person '{lead.sales_person}' not found, using default")
 
         # =============================
         # CREATE CUSTOMER (res.partner)
@@ -185,23 +195,41 @@ def sync_lead(lead: Lead):
             'user_id': user_id,
         }
 
-        # Add campaign/source
-        if campaign_id:
-            opportunity_data['campaign_id'] = campaign_id
+        # Add SOURCE - This is what you want!
+        if source_id:
+            # If we have a source ID from utm.source
+            opportunity_data['source_id'] = source_id
+        else:
+            # Fallback: try to set as a text field if source_id doesn't exist
+            try:
+                # Some Odoo versions have 'source' as char field
+                opportunity_data['source'] = lead.exhibition
+            except:
+                # Last resort: add to description
+                pass
 
         # Add partner if exists
         if partner_id:
             opportunity_data['partner_id'] = partner_id
 
-        # Add contact fields - PHONE goes to phone field
+        # Add contact fields
         if lead.phone:
             opportunity_data['phone'] = lead.phone
         
-        # MOBILE goes to mobile field (if exists in your Odoo)
         if lead.mobile:
-            opportunity_data['mobile'] = lead.mobile
+            # Try different possible field names for mobile
+            try:
+                opportunity_data['mobile'] = lead.mobile
+            except:
+                try:
+                    opportunity_data['phone_mobile'] = lead.mobile
+                except:
+                    print(f"⚠️ Could not set mobile field, adding to notes")
+                    if lead.notes:
+                        lead.notes += f"\nMobile: {lead.mobile}"
+                    else:
+                        lead.notes = f"Mobile: {lead.mobile}"
             
-        # EMAIL goes to email_from field
         if lead.email:
             opportunity_data['email_from'] = lead.email
 
@@ -220,25 +248,24 @@ def sync_lead(lead: Lead):
         print(f"✅ Opportunity created with ID: {opportunity_id}")
 
         # =============================
-        # ADD A NOTE/MESSAGE WITH SOURCE AND UNIQUE ID
+        # ADD A NOTE WITH UNIQUE ID (Optional)
         # =============================
-        message_body = f"""
-        <b>Lead Source:</b> {lead.exhibition}<br/>
-        <b>Unique ID:</b> {lead.unique_id}<br/>
-        <b>Contact Person:</b> {lead.contact_person or 'Not provided'}<br/>
-        """
-        
-        models.execute_kw(
-            ODOO_DB, uid, ODOO_PASSWORD,
-            'crm.lead', 'message_post',
-            [opportunity_id],
-            {
-                'body': message_body,
-                'message_type': 'comment',
-                'subtype_xmlid': 'mail.mt_note'
-            }
-        )
-        print(f"✅ Added note with source and unique ID")
+        if lead.unique_id:
+            message_body = f"""
+            <b>Unique ID:</b> {lead.unique_id}<br/>
+            """
+            
+            models.execute_kw(
+                ODOO_DB, uid, ODOO_PASSWORD,
+                'crm.lead', 'message_post',
+                [opportunity_id],
+                {
+                    'body': message_body,
+                    'message_type': 'comment',
+                    'subtype_xmlid': 'mail.mt_note'
+                }
+            )
+            print(f"✅ Added note with unique ID")
 
         # =============================
         # ATTACH IMAGE
@@ -299,7 +326,7 @@ def test_connection():
         }
     
     # Get available fields for debugging
-    fields = []
+    fields = {}
     try:
         fields = models.execute_kw(
             ODOO_DB, uid, ODOO_PASSWORD,
@@ -309,13 +336,20 @@ def test_connection():
     except:
         pass
     
+    # Specifically check for source-related fields
+    source_fields = {}
+    for field_name in ['source_id', 'source', 'campaign_id', 'x_source']:
+        if field_name in fields:
+            source_fields[field_name] = fields[field_name]
+    
     return {
         "status": "connected",
         "uid": uid,
         "url": ODOO_URL,
         "db": ODOO_DB,
         "user": ODOO_USERNAME,
-        "available_fields": list(fields.keys()) if fields else []
+        "source_fields_available": source_fields,
+        "all_fields": list(fields.keys()) if fields else []
     }
 
 
@@ -325,6 +359,6 @@ def root():
         "message": "Lead Sync API is running",
         "endpoints": {
             "POST /sync-lead": "Sync a lead with image",
-            "GET /test": "Test Odoo connection and see available fields"
+            "GET /test": "Test Odoo connection and see available source fields"
         }
     }
