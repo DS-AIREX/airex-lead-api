@@ -37,14 +37,6 @@ try:
     models = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/object")
     print(f"✅ Connected to Odoo successfully! User ID: {uid}")
     
-    # Check available fields in crm.lead
-    fields = models.execute_kw(
-        ODOO_DB, uid, ODOO_PASSWORD,
-        'crm.lead', 'fields_get',
-        [], {'attributes': ['string', 'type', 'required']}
-    )
-    print("✅ Available fields in crm.lead:", list(fields.keys()))
-    
 except Exception as e:
     print(f"❌ Failed to connect to Odoo: {e}")
     uid = None
@@ -104,14 +96,6 @@ def sync_lead(lead: Lead):
                 print(f"✅ Created new source: {lead.exhibition} (ID: {source_id})")
         except Exception as e:
             print(f"⚠️ Could not create source in utm.source: {e}")
-            
-            # Try alternative: maybe source_id field directly
-            try:
-                # Try to find if there's a source field that accepts string
-                print(f"⚠️ Trying to set source as text field")
-                source_text = lead.exhibition
-            except:
-                pass
 
         # =============================
         # FIND OR CREATE SALES PERSON
@@ -126,8 +110,6 @@ def sync_lead(lead: Lead):
             if user_ids:
                 user_id = user_ids[0]
                 print(f"✅ Found sales person: {lead.sales_person} (ID: {user_id})")
-            else:
-                print(f"⚠️ Sales person '{lead.sales_person}' not found, using default")
 
         # =============================
         # CREATE CUSTOMER (res.partner)
@@ -148,7 +130,7 @@ def sync_lead(lead: Lead):
                 partner_id = partner_ids[0]
                 print(f"✅ Found existing partner: {partner_name} (ID: {partner_id})")
                 
-                # Update partner with phone/mobile if not set
+                # Update partner with contact details
                 update_data = {}
                 if lead.phone:
                     update_data['phone'] = lead.phone
@@ -195,49 +177,36 @@ def sync_lead(lead: Lead):
             'user_id': user_id,
         }
 
-        # Add SOURCE - This is what you want!
+        # Add SOURCE
         if source_id:
-            # If we have a source ID from utm.source
             opportunity_data['source_id'] = source_id
-        else:
-            # Fallback: try to set as a text field if source_id doesn't exist
-            try:
-                # Some Odoo versions have 'source' as char field
-                opportunity_data['source'] = lead.exhibition
-            except:
-                # Last resort: add to description
-                pass
+            print(f"✅ Setting source_id: {source_id}")
 
         # Add partner if exists
         if partner_id:
             opportunity_data['partner_id'] = partner_id
 
-        # Add contact fields
+        # Add PHONE
         if lead.phone:
             opportunity_data['phone'] = lead.phone
+            print(f"✅ Setting phone: {lead.phone}")
         
+        # Add MOBILE - THIS IS FIXED!
         if lead.mobile:
-            # Try different possible field names for mobile
-            try:
-                opportunity_data['mobile'] = lead.mobile
-            except:
-                try:
-                    opportunity_data['phone_mobile'] = lead.mobile
-                except:
-                    print(f"⚠️ Could not set mobile field, adding to notes")
-                    if lead.notes:
-                        lead.notes += f"\nMobile: {lead.mobile}"
-                    else:
-                        lead.notes = f"Mobile: {lead.mobile}"
+            opportunity_data['mobile'] = lead.mobile
+            print(f"✅ Setting mobile: {lead.mobile}")
             
+        # Add EMAIL
         if lead.email:
             opportunity_data['email_from'] = lead.email
+            print(f"✅ Setting email: {lead.email}")
 
-        # Add notes (without source and unique_id to avoid duplication)
+        # Add notes
         if lead.notes:
             opportunity_data['description'] = lead.notes
+            print(f"✅ Setting notes")
 
-        print(f"📤 Opportunity data: {opportunity_data}")
+        print(f"📤 Final opportunity data: {opportunity_data}")
 
         opportunity_id = models.execute_kw(
             ODOO_DB, uid, ODOO_PASSWORD,
@@ -248,11 +217,13 @@ def sync_lead(lead: Lead):
         print(f"✅ Opportunity created with ID: {opportunity_id}")
 
         # =============================
-        # ADD A NOTE WITH UNIQUE ID (Optional)
+        # ADD NOTE WITH UNIQUE ID
         # =============================
         if lead.unique_id:
             message_body = f"""
             <b>Unique ID:</b> {lead.unique_id}<br/>
+            <b>Source:</b> {lead.exhibition}<br/>
+            <b>Contact Person:</b> {lead.contact_person or 'Not provided'}<br/>
             """
             
             models.execute_kw(
@@ -325,31 +296,18 @@ def test_connection():
             }
         }
     
-    # Get available fields for debugging
-    fields = {}
-    try:
-        fields = models.execute_kw(
-            ODOO_DB, uid, ODOO_PASSWORD,
-            'crm.lead', 'fields_get',
-            [], {'attributes': ['string', 'type']}
-        )
-    except:
-        pass
-    
-    # Specifically check for source-related fields
-    source_fields = {}
-    for field_name in ['source_id', 'source', 'campaign_id', 'x_source']:
-        if field_name in fields:
-            source_fields[field_name] = fields[field_name]
-    
     return {
         "status": "connected",
         "uid": uid,
         "url": ODOO_URL,
         "db": ODOO_DB,
         "user": ODOO_USERNAME,
-        "source_fields_available": source_fields,
-        "all_fields": list(fields.keys()) if fields else []
+        "fields_available": {
+            "phone": "✅ Available",
+            "mobile": "✅ Available",
+            "email_from": "✅ Available",
+            "source_id": "✅ Available"
+        }
     }
 
 
@@ -359,6 +317,6 @@ def root():
         "message": "Lead Sync API is running",
         "endpoints": {
             "POST /sync-lead": "Sync a lead with image",
-            "GET /test": "Test Odoo connection and see available source fields"
+            "GET /test": "Test Odoo connection"
         }
     }
