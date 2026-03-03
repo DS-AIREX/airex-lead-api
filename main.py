@@ -53,6 +53,7 @@ except Exception as e:
     uid = None
     models = None
 
+
 # =====================================
 # REQUEST MODEL
 # =====================================
@@ -60,7 +61,7 @@ class Lead(BaseModel):
     name: str
     phone: Optional[str] = None
     email: Optional[str] = None
-    company: Optional[str] = None
+    company: Optional[str] = None  # This will now go to Contact Person
     notes: Optional[str] = None
     exhibition: str
     sales_person: Optional[str] = "Preet Kaur"
@@ -119,7 +120,7 @@ def sync_lead(lead: Lead):
             assigned_user_id = user_ids[0]
             print(f"✅ Salesperson found (ID: {assigned_user_id})")
         else:
-            print(f"⚠️ Salesperson not found, using default user")
+            print("⚠️ Salesperson not found, using default authenticated user")
 
         # =====================================
         # STEP 3: PREPARE OPPORTUNITY DATA
@@ -131,15 +132,19 @@ def sync_lead(lead: Lead):
             'source_id': source_id,
         }
 
+        # Mobile
         if lead.phone:
-            opportunity_data['mobile'] = lead.phone  # Correct field
+            opportunity_data['mobile'] = lead.phone
 
+        # Email
         if lead.email:
             opportunity_data['email_from'] = lead.email
 
+        # 👇 CONTACT PERSON FIELD (IMPORTANT CHANGE)
         if lead.company:
             opportunity_data['contact_name'] = lead.company
 
+        # Notes
         if lead.notes:
             opportunity_data['description'] = lead.notes
 
