@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,17 +11,7 @@ import traceback
 # Load environment variables
 load_dotenv()
 
-app = FastAPI()
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Get Odoo credentials from environment variables
+# Odoo credentials
 ODOO_URL = os.environ["ODOO_URL"]
 ODOO_DB = os.environ["ODOO_DB"]
 ODOO_USERNAME = os.environ["ODOO_USERNAME"]
@@ -31,6 +22,16 @@ print(f"   URL: {ODOO_URL}")
 print(f"   DB: {ODOO_DB}")
 print(f"   Username: {ODOO_USERNAME}")
 print(f"   Password: {'*' * len(ODOO_PASSWORD)}")
+
+app = FastAPI()
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Connect to Odoo
 try:
@@ -50,13 +51,13 @@ except Exception as e:
 
 class Lead(BaseModel):
     name: str
-    phone: str | None = None
-    email: str | None = None
-    company: str | None = None
-    notes: str | None = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    company: Optional[str] = None
+    notes: Optional[str] = None
     exhibition: str
-    sales_person: str | None = "Preet Kaur"
-    image: str | None = None
+    sales_person: Optional[str] = "Preet Kaur"
+    image: Optional[str] = None
 
 
 @app.post("/sync-lead")
@@ -95,11 +96,13 @@ def sync_lead(lead: Lead):
             'user_id': assigned_user_id,
         }
         
+        # Add source/exhibition to description
         if lead.notes:
             opportunity_data['description'] = f"Source: {lead.exhibition}\n\n{lead.notes}"
         else:
             opportunity_data['description'] = f"Source: {lead.exhibition}"
         
+        # Add optional fields
         if lead.phone:
             opportunity_data['phone'] = lead.phone
         if lead.email:
