@@ -30,21 +30,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Connect to Odoo
-try:
-    common = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/common")
-    uid = common.authenticate(ODOO_DB, ODOO_USERNAME, ODOO_PASSWORD, {})
-    
-    if not uid:
-        raise Exception("Authentication failed")
-    
-    models = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/object")
-    logger.info(f"✅ Connected to Odoo successfully! User ID: {uid}")
-    
-except Exception as e:
-    logger.error(f"❌ Failed to connect to Odoo: {e}")
-    uid = None
-    models = None
+# ============ Helper function to get Odoo connection ============
+def get_odoo_connection():
+    """Create a new Odoo connection for each request"""
+    try:
+        common = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/common")
+        uid = common.authenticate(ODOO_DB, ODOO_USERNAME, ODOO_PASSWORD, {})
+        
+        if not uid:
+            raise Exception("Authentication failed")
+        
+        models = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/object")
+        return uid, models
+    except Exception as e:
+        logger.error(f"❌ Failed to connect to Odoo: {e}")
+        return None, None
 
 class Lead(BaseModel):
     unique_id: str
@@ -61,7 +61,9 @@ class Lead(BaseModel):
 
 @app.post("/sync-lead")
 def sync_lead(lead: Lead):
-    # Check Odoo connection
+    # Create a NEW connection for each request
+    uid, models = get_odoo_connection()
+    
     if uid is None or models is None:
         raise HTTPException(status_code=500, detail="Odoo connection not available")
     
@@ -117,13 +119,20 @@ def sync_lead(lead: Lead):
                 if partner_ids:
                     partner_id = partner_ids[0]
                     logger.info(f"✅ Found existing partner: {partner_name} (ID: {partner_id})")
+                    
+                    # Update partner with phone if available
+                    if lead.phone:
+                        clean_phone = str(lead.phone).replace('+', '').strip()
+                        models.execute_kw(
+                            ODOO_DB, uid, ODOO_PASSWORD,
+                            'res.partner', 'write',
+                            [[partner_id], {'phone': clean_phone}]
+                        )
                 else:
                     # Create new partner
                     partner_data = {'name': partner_name}
                     
-                    # Add phone if available
                     if lead.phone:
-                        # Clean phone number (remove +)
                         clean_phone = str(lead.phone).replace('+', '').strip()
                         partner_data['phone'] = clean_phone
                     
@@ -148,7 +157,6 @@ def sync_lead(lead: Lead):
         clean_phone = ""
         if lead.phone:
             clean_phone = str(lead.phone).replace('+', '').replace(' ', '').strip()
-            logger.info(f"✅ Cleaned phone for Odoo: {clean_phone}")
         
         # Prepare opportunity data
         opportunity_data = {
@@ -156,29 +164,27 @@ def sync_lead(lead: Lead):
             'type': 'opportunity',
         }
 
-        # Add SOURCE (this is what you're missing!)
+        # Add SOURCE
         if source_id:
             opportunity_data['source_id'] = source_id
-            logger.info(f"✅ Adding source_id: {source_id}")
         
-        # Add partner if exists
+        # Add partner
         if partner_id:
             opportunity_data['partner_id'] = partner_id
 
-        # Add PHONE (this is what you're missing!)
+        # Add PHONE
         if clean_phone:
             opportunity_data['phone'] = clean_phone
-            logger.info(f"✅ Adding phone: {clean_phone}")
             
         # Add EMAIL
         if lead.email:
             opportunity_data['email_from'] = lead.email
 
-        # Add notes (without source to avoid duplication)
+        # Add notes
         if lead.notes:
             opportunity_data['description'] = lead.notes
 
-        logger.info(f"📤 Final opportunity data being sent to Odoo: {opportunity_data}")
+        logger.info(f"📤 Creating opportunity with data: {opportunity_data}")
 
         # CREATE THE OPPORTUNITY
         opportunity_id = models.execute_kw(
@@ -188,26 +194,6 @@ def sync_lead(lead: Lead):
         )
         
         logger.info(f"✅ Opportunity created with ID: {opportunity_id}")
-
-        # =============================
-        # ADD NOTE WITH UNIQUE ID (Optional)
-        # =============================
-        if lead.unique_id:
-            message_body = f"""
-            <b>Unique ID:</b> {lead.unique_id}<br/>
-            <b>Source:</b> {lead.exhibition}<br/>
-            """
-            
-            models.execute_kw(
-                ODOO_DB, uid, ODOO_PASSWORD,
-                'crm.lead', 'message_post',
-                [opportunity_id],
-                {
-                    'body': message_body,
-                    'message_type': 'comment',
-                }
-            )
-            logger.info(f"✅ Added note with unique ID")
 
         # =============================
         # ATTACH IMAGE
@@ -231,7 +217,6 @@ def sync_lead(lead: Lead):
                 logger.warning(f"⚠️ Could not attach image: {e}")
 
         logger.info(f"\n✅ Sync completed for opportunity {opportunity_id}")
-        logger.info('='*50)
         
         return {
             "status": "success", 
@@ -247,6 +232,9 @@ def sync_lead(lead: Lead):
 
 @app.get("/test")
 def test_connection():
+    # Create a new connection for test
+    uid, models = get_odoo_connection()
+    
     if uid is None:
         return {"status": "error", "message": "Odoo connection failed"}
     
