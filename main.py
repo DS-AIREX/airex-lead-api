@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -27,6 +28,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Helper function to sanitize text for Odoo
+def sanitize_text(text, max_length=200):
+    """Remove special characters that might break XML-RPC"""
+    if not text:
+        return ""
+    # Remove control characters
+    text = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', str(text))
+    # Limit length
+    if len(text) > max_length:
+        text = text[:max_length] + "..."
+    return text
 
 # Connect to Odoo
 try:
@@ -62,87 +75,72 @@ def sync_lead(lead: Lead):
     if uid is None or models is None:
         raise HTTPException(status_code=500, detail="Odoo connection not available")
     
-    # Log the incoming lead data
-    logger.info(f"\n{'='*50}")
-    logger.info(f"🔄 Processing lead: {lead.name}")
-    logger.info(f"📱 Phone: {lead.phone}")
-    logger.info(f"📧 Email: {lead.email}")
-    logger.info(f"🎪 Exhibition: {lead.exhibition}")
-    logger.info(f"🆔 Unique ID: {lead.unique_id}")
-    
-    # Try with minimal data first, then add fields one by one
     try:
-        # Start with absolute minimum required fields
+        logger.info(f"\n{'='*50}")
+        logger.info(f"🔄 Processing lead: {lead.name}")
+        logger.info(f"📱 Phone: {lead.phone}")
+        logger.info(f"📧 Email: {lead.email}")
+        
+        # =============================
+        # SANITIZE ALL DATA
+        # =============================
+        safe_name = sanitize_text(lead.name, 100)
+        safe_phone = sanitize_text(lead.phone, 20).replace('+', '').replace(' ', '')
+        safe_email = sanitize_text(lead.email, 100)
+        safe_notes = sanitize_text(lead.notes, 500)
+        
+        # Create a clean description without special characters
+        description_parts = []
+        if lead.exhibition:
+            description_parts.append(f"Source: {sanitize_text(lead.exhibition, 50)}")
+        if lead.notes:
+            description_parts.append(sanitize_text(lead.notes, 200))
+        if lead.unique_id:
+            description_parts.append(f"ID: {sanitize_text(lead.unique_id, 30)}")
+        
+        safe_description = "\n".join(description_parts) if description_parts else ""
+        
+        logger.info(f"📝 Sanitized data ready")
+        
+        # =============================
+        # CREATE OPPORTUNITY WITH SAFE DATA
+        # =============================
+        
+        # Start with minimal data
         opportunity_data = {
-            'name': str(lead.name)[:100] if lead.name else 'Lead from Exhibition',
+            'name': safe_name or "Lead from Exhibition",
             'type': 'opportunity',
         }
         
-        logger.info(f"📝 Step 1: Creating with minimal data: {opportunity_data}")
+        # Add optional fields if they exist and are valid
+        if safe_phone:
+            opportunity_data['phone'] = safe_phone
+        if safe_email:
+            opportunity_data['email_from'] = safe_email
+        if safe_description:
+            opportunity_data['description'] = safe_description
         
-        # Create the lead with minimal data
+        logger.info(f"📤 Creating opportunity: {opportunity_data}")
+        
+        # Create the lead
         opportunity_id = models.execute_kw(
             ODOO_DB, uid, ODOO_PASSWORD,
             'crm.lead', 'create',
             [opportunity_data]
         )
         
-        logger.info(f"✅ Step 1 success: Created lead with ID: {opportunity_id}")
+        logger.info(f"✅ Lead created with ID: {opportunity_id}")
         
-        # Step 2: Add phone if available
-        if lead.phone:
-            try:
-                clean_phone = str(lead.phone).replace('+', '').replace(' ', '').strip()
-                models.execute_kw(
-                    ODOO_DB, uid, ODOO_PASSWORD,
-                    'crm.lead', 'write',
-                    [[opportunity_id], {'phone': clean_phone}]
-                )
-                logger.info(f"✅ Added phone: {clean_phone}")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not add phone: {e}")
-        
-        # Step 3: Add email if available
-        if lead.email:
-            try:
-                models.execute_kw(
-                    ODOO_DB, uid, ODOO_PASSWORD,
-                    'crm.lead', 'write',
-                    [[opportunity_id], {'email_from': lead.email}]
-                )
-                logger.info(f"✅ Added email: {lead.email}")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not add email: {e}")
-        
-        # Step 4: Add notes/source
-        if lead.exhibition or lead.notes:
-            try:
-                description = ""
-                if lead.exhibition:
-                    description += f"Source: {lead.exhibition}\n"
-                if lead.notes:
-                    description += f"{lead.notes}\n"
-                if lead.unique_id:
-                    description += f"Unique ID: {lead.unique_id}"
-                
-                if description:
-                    models.execute_kw(
-                        ODOO_DB, uid, ODOO_PASSWORD,
-                        'crm.lead', 'write',
-                        [[opportunity_id], {'description': description}]
-                    )
-                    logger.info(f"✅ Added description")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not add description: {e}")
-        
-        # Step 5: Add image if available
+        # =============================
+        # ATTACH IMAGE (if exists)
+        # =============================
         if lead.image:
             try:
                 attachment_id = models.execute_kw(
                     ODOO_DB, uid, ODOO_PASSWORD,
                     'ir.attachment', 'create',
                     [{
-                        'name': f"{lead.name}_{opportunity_id}.jpg",
+                        'name': f"{safe_name}_{opportunity_id}.jpg",
                         'type': 'binary',
                         'datas': lead.image,
                         'res_model': 'crm.lead',
@@ -164,16 +162,15 @@ def sync_lead(lead: Lead):
         logger.error(f"❌ Odoo Fault: {fault.faultString}")
         logger.error(f"Fault code: {fault.faultCode}")
         
-        # If it's a duplicate error, return success anyway
+        # If it's a duplicate, return success anyway
         if "unique" in fault.faultString.lower() or "duplicate" in fault.faultString.lower():
             logger.warning("⚠️ Duplicate lead detected")
             return {
                 "status": "already_exists",
-                "message": "Lead may already exist",
+                "message": "Lead already exists",
                 "id": None
             }
         
-        # For other errors, return the fault string
         raise HTTPException(status_code=500, detail=fault.faultString)
     
     except Exception as e:
